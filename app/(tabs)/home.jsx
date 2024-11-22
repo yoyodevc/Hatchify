@@ -1,0 +1,647 @@
+import { FlatList, Text, View, Image, TouchableOpacity, Modal, BackHandler, Alert, ActivityIndicator, TextInput } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
+import { auth } from '../../firebaseConfig';
+import { getFirestore, doc, getDoc, collection, query, where, getDocs, updateDoc, setDoc, addDoc, Timestamp, onSnapshot } from 'firebase/firestore';
+import { getDatabase, ref, onValue, set } from 'firebase/database';
+
+import warning from "../../assets/icons/warning.png";
+import success from "../../assets/icons/success.png";
+import info from "../../assets/icons/info.png";
+import notificationIcon from '../../assets/icons/notification.png';
+
+import Notification from '../notification/Notification';
+
+const Home = () => {
+  const [username, setUsername] = useState('');
+  const [notificationsVisible, setNotificationsVisible] = useState(false);
+  const [batches, setBatches] = useState([]);
+  const [batchStatuses, setBatchStatuses] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [temperature, setTemperature] = useState(0);
+  const [humidity, setHumidity] = useState(0);
+
+  const [modalVisible, setModalVisible] = useState(false);
+  const [selectedBatch, setSelectedBatch] = useState(null);
+  const [remarksModalVisible, setRemarksModalVisible] = useState(false); 
+  const [hatchedEggs, setHatchedEggs] = useState(''); 
+  const [batchRemarks, setBatchRemarks] = useState(''); 
+ 
+  const [successRateModalVisible, setSuccessRateModalVisible] = useState(false);
+  const [isReadOnly, setIsReadOnly] = useState(false); 
+
+  const [shouldCreateNotification, setShouldCreateNotification] = useState(false);
+  const [notificationBatch, setNotificationBatch] = useState(null);
+  const [notifications, setNotifications] = useState([]);
+  const [existingNotifications, setExistingNotifications] = useState(new Set());
+
+  const db = getFirestore();
+  const rtdb = getDatabase();
+    
+  const fetchUserData = async () => {
+    setLoading(true);
+    const user = auth.currentUser;
+
+    if (user) {
+        try {
+            const userDocRef = doc(db, 'users', user.uid);
+            const userDoc = await getDoc(userDocRef); 
+
+            if (userDoc.exists()) {
+                const userData = userDoc.data(); 
+                setUsername(userData.username); 
+
+                const batchQuery = query(
+                    collection(db, 'batches'),
+                    where('uid', '==', user.uid),
+                    where('status', '==', 'ongoing')
+                );
+
+                const unsubscribe = onSnapshot(batchQuery, (querySnapshot) => {
+                    const fetchedBatches = [];
+                    querySnapshot.forEach((doc) => {
+                        const batchData = doc.data();
+                        const batchRemarks = {
+                            day5: batchData.day5 || 'No remarks available.',
+                            day10: batchData.day10 || 'No remarks available.',
+                            day15: batchData.day15 || 'No remarks available.'
+                        };
+                        
+                        fetchedBatches.push({ id: doc.id, batchRemarks, ...batchData });
+                    });
+                    setBatches(fetchedBatches); 
+                }, (error) => {
+                    console.error("Error fetching batches:", error); 
+                });
+
+                return unsubscribe; 
+            } else {
+                console.log("No user document found"); 
+            }
+        } catch (error) {
+            console.error('Error fetching user document:', error); 
+        } finally {
+            setLoading(false); 
+            setRefreshing(false);
+        }
+    } else {
+        //console.log("No authenticated user"); 
+        setRefreshing(false);
+    }
+};
+
+  // function para icheck yung mga batches na may day 1 notification in-app, etc
+  useEffect(() => {
+    batches.forEach((item) => {
+        const [month, day, year] = item.startDate.split('-').map(Number);
+        const startDate = new Date(year, month - 1, day);
+        const currentDate = new Date();
+        const dayDifference = Math.floor((currentDate - startDate) / (1000 * 60 * 60 * 24));
+        const displayDay = dayDifference + 1;
+
+        const notificationId = `${item.id}-day-${displayDay}`;
+        if (!existingNotifications.has(notificationId)) {
+            if (displayDay === 1) {
+                createNotification(item, `The batch ${item.batchName} has started incubation.`, success);
+            } else if ([5, 10, 15].includes(displayDay)) {
+                createNotification(item, `The batch ${item.batchName}'s incubation is now at Day ${displayDay} and needs to be candled.`, info);
+            } else if (displayDay === 18) {
+                createNotification(item, `The batch ${item.batchName} has entered lockdown mode. Raise the Humidity to 65%.`, warning);
+            } else if (displayDay === 21) {
+                createNotification(item, `The batch ${item.batchName} is expected to finish incubating today.`, info);
+            }
+            setExistingNotifications((prev) => new Set(prev).add(notificationId));
+        }
+    });
+}, [batches]);
+
+// create notification use effect
+useEffect(() => {
+    if (shouldCreateNotification && notificationBatch) {
+        createNotification(notificationBatch);
+        setShouldCreateNotification(false);
+        setNotificationBatch(null);
+    }
+}, [shouldCreateNotification, notificationBatch]);
+
+  const fetchTemperatureAndHumidity = () => {
+    const tempRef = ref(rtdb, 'temperature');
+    const humidityRef = ref(rtdb, 'humidity');
+
+    onValue(tempRef, (snapshot) => {
+      const tempValue = snapshot.val();
+      console.log('Temperature:', tempValue);
+      setTemperature(tempValue);
+    }, (error) => {
+      console.error('Error fetching temperature:', error);
+    });
+
+    onValue(humidityRef, (snapshot) => {
+      const humidityValue = snapshot.val();
+      console.log('Humidity:', humidityValue);
+      const formattedHumidity = `${parseFloat(humidityValue).toFixed(1)}%`;
+      setHumidity(formattedHumidity);
+    }, (error) => {
+      console.error('Error fetching humidity:', error);
+    });
+  };
+
+  useEffect(() => {
+    fetchUserData();
+    fetchTemperatureAndHumidity();
+
+    const timeoutId = setTimeout(() => {
+      fetchUserData();
+    }, 3000);
+
+    const now = new Date();
+    const minutesUntilNextHour = 60 - now.getMinutes();
+    const millisecondsUntilNextHour = minutesUntilNextHour * 60 * 1000;
+  
+    const startAtNextHour = setTimeout(() => {
+      fetchUserData();
+  
+      const intervalId = setInterval(() => {
+        fetchUserData();
+      }, 3600000);
+  
+      return () => clearInterval(intervalId);
+    }, millisecondsUntilNextHour);
+  
+    return () => {
+      clearTimeout(timeoutId);
+      clearTimeout(startAtNextHour);
+    };
+  }, []);
+
+  const onRefresh = () => {
+    setRefreshing(true);
+    fetchUserData();
+  };
+
+  const handleBackButton = () => {
+    Alert.alert(
+      'Confirm Exit',
+      'Do you want to exit?',
+      [
+        {
+          text: 'Cancel',
+          onPress: () => null,
+          style: 'cancel',
+        },
+        {
+          text: 'Yes',
+          onPress: () => BackHandler.exitApp(),
+        },
+      ],
+      { cancelable: false }
+    );
+    return true;
+  };
+
+  useFocusEffect(
+    React.useCallback(() => {
+      const backHandler = BackHandler.addEventListener('hardwareBackPress', handleBackButton);
+      return () => backHandler.remove();
+    }, [])
+  );
+  
+  const [unreadNotificationsCount, setUnreadNotificationsCount] = useState(0);
+  const toggleNotifications = () => setNotificationsVisible((prev) => !prev);
+  
+  const createNotification = async (batch, message, icon) => {
+    const db = getFirestore();
+    const user = auth.currentUser;
+  
+    const newNotificationEntry = {
+      batchid: batch.id,
+      uid: user.uid,
+      message: message,
+      icon: icon,
+      time: Timestamp.now(),
+      markasread: false, 
+    };
+  
+    try {
+      const batchNotifRef = collection(db, 'batchNotif');
+      const q = query(
+        batchNotifRef,
+        where('batchid', '==', batch.id),
+        where('message', '==', newNotificationEntry.message),
+        where('icon', '==', newNotificationEntry.icon)
+      );
+  
+      const querySnapshot = await getDocs(q);
+  
+      if (!querySnapshot.empty) {
+        return;
+      }
+      await addDoc(batchNotifRef, newNotificationEntry);
+      console.log(`Notification created for batch: ${batch.batchName}`);
+    } catch (error) {
+      console.error('Error creating notification:', error);
+    }
+  };
+
+//for notification retrieval 
+useEffect(() => {
+  if (batches.length === 0) return;
+
+  const db = getFirestore();
+  const batchIds = batches.map(batch => batch.id);
+  const unsubscribe = onSnapshot(
+    query(collection(db, 'batchNotif'), where('batchid', 'in', batchIds)),
+    (querySnapshot) => {
+      const notificationsList = [];
+      let unreadCount = 0;
+
+      querySnapshot.forEach((doc) => {
+        const notification = doc.data();
+
+        if (notification.time instanceof Timestamp) {
+          notificationsList.push({
+            id: doc.id,
+            message: notification.message,
+            icon: notification.icon,
+            time: notification.time.toDate(),
+            markasread: notification.markasread || false,
+          });
+          
+          if (notification.markasread !== "Yes") unreadCount++;
+        } else {
+          console.warn(`Notification with ID ${doc.id} is missing a valid time field:`, notification);
+        }
+      });
+
+      setNotifications(notificationsList);
+      setUnreadNotificationsCount(unreadCount); 
+    },
+    (error) => {
+      console.error('Error fetching notifications in real-time:', error);
+    }
+  );
+
+  return () => unsubscribe();
+}, [batches]);
+
+//function para ihandle yung data sa loob ng batch
+useEffect(() => {
+  const updatedBatchStatuses = {};
+
+  batches.forEach((item) => {
+    const [month, day, year] = item.startDate.split('-').map(Number);
+    const startDate = new Date(year, month - 1, day);
+    const currentDate = new Date();
+    const dayDifference = Math.floor((currentDate - startDate) / (1000 * 60 * 60 * 24));
+    const displayDay = dayDifference + 1;
+
+    updatedBatchStatuses[item.id] = displayDay;
+
+    const mode = displayDay > 18 ? 'Lockdown' : 'Incubating';
+    const db = getDatabase();
+    const modeRef = ref(db, '/mode');
+    set(modeRef, mode);
+  });
+
+  setBatchStatuses(updatedBatchStatuses);
+}, [batches]);
+
+const renderBatchItem = ({ item }) => {
+  const displayDay = batchStatuses[item.id] || 0;
+  const batchStatus = displayDay;
+
+const handleInfoClick = (item) => {
+  setSelectedBatch(item)
+};
+
+const handleCloseModal = () => {
+  setSuccessRateModalVisible(false);
+  setRemarksModalVisible(false);
+  setSelectedBatch(null);
+};
+
+    return (
+      <View className="bg-[#ede8d0] p-4 rounded-lg mb-4 relative" key={item.id}>
+        <TouchableOpacity
+          onPress={() => {
+            setRemarksModalVisible(true);
+            setIsReadOnly(true);
+          }}
+          className="absolute top-2 right-2 w-10 h-10 rounded-full bg-[] flex items-center justify-center z-10"
+          //className="absolute top-2 right-2 w-10 h-10 rounded-full bg-[#d3c4a8] flex items-center justify-center z-10"
+        >
+          <Image source={info} className="w-5 h-5" alt="Information Icon" />
+        </TouchableOpacity>
+
+        <Text className="font-pbold">Batch Name: {item.batchName}</Text>
+        <Text className="font-pmedium">Start Date: {item.startDate}</Text>
+        <Text className="font-pmedium">Day: {batchStatus} 
+          {batchStatus >= 18 && batchStatus <= 21 && (
+            <Text className="text-red-500"> (Lockdown Mode)</Text>
+          )}
+        </Text>
+        <Text className="font-pmedium">Number of Eggs: {item.numberOfEggs}</Text>
+        <Text className="font-pmedium">Status: {item.status}</Text>
+  
+        {batchStatus >= 21 && (
+          <TouchableOpacity
+            onPress={() => {
+              setSelectedBatch(item); 
+              setModalVisible(true); 
+            }}
+            className="mt-4 bg-[#5f432c] py-2 px-4 rounded-lg"
+          >
+            <Text className="text-white font-psemibold text-center">Enter Success Rate</Text>
+          </TouchableOpacity>
+        )}
+
+        {[5, 10, 15].includes(batchStatus) && (
+          <TouchableOpacity
+            onPress={() => {
+              setSelectedBatch(item);
+              setRemarksModalVisible(true);
+              setIsReadOnly(false);
+            }}
+            className="mt-4 bg-[#5f432c] py-2 px-4 rounded-lg"
+          >
+            <Text className="text-white font-psemibold text-center">Add Remarks</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+    );
+  };
+
+  const handleFinishBatch = async () => {
+    if (selectedBatch) {
+      const totalEggs = selectedBatch.numberOfEggs; 
+      const hatchesCount = Number(hatchedEggs); 
+  
+      if (hatchesCount > totalEggs) {
+        Alert.alert('Error', `Hatched eggs cannot exceed the total number of eggs, which is ${totalEggs}!`);
+        return;
+      }
+      try {
+        const batchDocRef = doc(db, 'batches', selectedBatch.id);
+        const formattedDate = new Date().toLocaleDateString('en-US', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit'
+        }).replace(/\//g, '-'); 
+  
+        await updateDoc(batchDocRef, {
+          hatches: hatchesCount,
+          status: 'finished',
+          endDate: formattedDate
+        });
+        
+        Alert.alert('Success', `Batch updated with ${hatchesCount} hatched eggs and marked as finished.`);
+        console.log(`Batch updated with Hatched Eggs: ${hatchedEggs} and status: finished`);
+        fetchUserData();
+        setModalVisible(false);
+        setHatchedEggs('');
+      } catch (error) {
+        console.error('Error updating batch hatches:', error);
+        Alert.alert('Error', 'Failed to update the hatches. Please try again.');
+      }
+    }
+  };
+
+  //forda write remarks
+  const handleSubmitRemarks = async () => {
+    if (selectedBatch && batchRemarks) {
+      const dayToUpdate = batchStatuses[selectedBatch.id];
+      let fieldToUpdate;
+  
+      if (dayToUpdate === 5) {
+        fieldToUpdate = 'day5';
+      } else if (dayToUpdate === 10) {
+        fieldToUpdate = 'day10';
+      } else if (dayToUpdate === 15) {
+        fieldToUpdate = 'day15';
+      } else {
+        Alert.alert("Invalid day", "Remarks can only be added on days 5, 10, or 15.");
+        return;
+      }
+  
+      try {
+        const batchDocRef = doc(db, 'batches', selectedBatch.id);
+        await updateDoc(batchDocRef, {
+          [fieldToUpdate]: batchRemarks,
+        });
+  
+        Alert.alert('Success', `Remarks for Day ${dayToUpdate} added successfully.`);
+        setRemarksModalVisible(false);
+        setBatchRemarks('');
+      } catch (error) {
+        console.error("Error updating remarks:", error);
+        Alert.alert("Error", "Failed to add remarks. Please try again.");
+      }
+    } else {
+      Alert.alert("Error", "Please enter remarks before submitting.");
+    }
+  };
+
+  return (
+  <SafeAreaView className="flex-1">
+    {loading ? (
+      <View className="flex-1 justify-center items-center">
+        <ActivityIndicator size="large" color="#0000ff" />
+        <Text className="mt-4">Loading...</Text>
+      </View>
+    ) : (
+      <FlatList
+        data={batches}
+        keyExtractor={(item) => item.id}
+        refreshing={notificationsVisible ? false : refreshing}
+        onRefresh={notificationsVisible ? null : onRefresh}
+        ListHeaderComponent={() => (
+          <View className="my-12 px-4 space-y-8">
+            <View className="flex-row justify-between items-start mb-6">
+              <View>
+                <Text className="font-pmedium text-lg">Welcome,</Text>
+                <Text className="font-psemibold text-2xl">{username}</Text>
+              </View>
+
+              <TouchableOpacity onPress={toggleNotifications} className="justify-center mt-2 mx-3 md:mx-4 lg:mx-5">
+                <Image source={notificationIcon} className="w-8 md:w-7 lg:w-8 h-8" resizeMode="contain" />
+                {unreadNotificationsCount > 0 && (
+                  <View className="absolute top-0 right-0 bg-red-500 w-3 h-3 rounded-full" />
+                )}
+              </TouchableOpacity>
+            </View>
+
+            <Notification
+              notifications={notifications}
+              visible={notificationsVisible}
+              onClose={toggleNotifications}
+              batches={batches}
+            />
+
+            <View className="flex-row justify-between mb-4">
+              <View className="bg-[#c4b191] p-5 rounded-lg items-center flex-1 mr-2">
+                <Text className="font-pmedium text-sm">Temperature</Text>
+                <Text 
+                  className={`font-psemibold text-4xl mt-2 ${temperature <= 36.9 || temperature >= 39.1 ? 'text-red-500' : ''}`}
+                >
+                  {temperature}°C
+                </Text>
+              </View>
+
+              <View className="flex-1 ml-2 items-center">
+                <Text className="font-pmedium text-sm mt-5">Humidity</Text>
+                <Text 
+                  className={`font-psemibold text-4xl mt-2 ${
+                    batches.length > 0 && batches[0].status === 'ongoing'
+                      ? (humidity <= '59%' || humidity >= '71%' ? 'text-red-500' : '') 
+                      : (humidity <= '44%' || humidity >= '56%' ? 'text-red-500' : '')
+                  }`}
+                >
+                  {humidity}
+                </Text>
+              </View>
+            </View>
+
+            <View className="my-6">
+              <Text className="font-psemibold text-xl mb-4">Batches</Text>
+
+              {batches.length === 0 ? (
+                <View className="flex items-center justify-center mt-4">
+                  <Text className="font-pmedium text-lg text-gray-500">No batch created</Text>
+                </View>
+              ) : (
+                <FlatList
+                  data={batches}
+                  keyExtractor={(item) => item.id}
+                  renderItem={renderBatchItem}
+                />
+              )}
+            </View>
+          </View>
+        )}
+      />
+    )}
+
+    <Modal
+      visible={modalVisible}
+      transparent={true}
+      animationType="bond"
+      onRequestClose={() => setModalVisible(false)}
+    >
+      <View className="flex-1 justify-center items-center bg-black/50">
+        <View className="bg-white p-6 rounded-lg w-4/5 max-w-md shadow-lg">
+          <Text className="font-psemibold text-xl mb-4 text-center">Egg Status</Text>
+          <Text className="font-pmedium mb-2">Hatched Eggs</Text>
+          <TextInput
+            value={hatchedEggs}
+            onChangeText={setHatchedEggs}
+            placeholder="Enter hatched eggs"
+            keyboardType="numeric"
+            className="border border-gray-300 p-2 rounded-lg mb-4"
+          />
+          <View className="flex-row justify-between mt-4">
+            <TouchableOpacity
+              onPress={() => setModalVisible(false)}
+              className="bg-gray-300 p-2 rounded-lg flex-1 mr-1"
+            >
+              <Text className="text-center font-psemibold">Cancel</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={handleFinishBatch}
+              className="bg-[#5f432c] p-2 rounded-lg flex-1 ml-1"
+            >
+              <Text className="text-center text-white font-psemibold">Enter</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+
+    <Modal
+      visible={remarksModalVisible && !isReadOnly}
+      transparent={true}
+      animationType="bond"
+      onRequestClose={() => setRemarksModalVisible(false)}
+    >
+      <View className="flex-1 justify-center items-center bg-black bg-black/50">
+        <View className="bg-white p-6 rounded-lg w-3/4">
+          <Text className="text-lg font-psemibold mb-4 text-center">Remarks</Text>
+          <TextInput
+            className="border border-gray-300 p-1 rounded-md mb-1 h-20"
+            placeholder="Enter remarks"
+            value={batchRemarks}
+            onChangeText={setBatchRemarks}
+            multiline={true}
+            textAlignVertical="top"
+          />
+          <View className="flex-row justify-between mt-4">
+          <TouchableOpacity
+            onPress={() => setRemarksModalVisible(false)}
+            className="bg-gray-100 py-2 px-4 rounded-lg w-1/2 mr-1"
+          >
+            <Text className="text-center font-psemibold">Cancel</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={handleSubmitRemarks}
+            className="bg-[#5f432c] py-2 px-4 rounded-lg flex-1"
+          >
+            <Text className="text-white font-psemibold text-center">Submit</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+      </View>
+    </Modal>
+
+    <Modal
+      visible={remarksModalVisible && isReadOnly}
+      transparent={true}
+      animationType="bond"
+      onRequestClose={() => setRemarksModalVisible(false)}
+    >
+      <View className="flex-1 justify-center items-center bg-black/50">
+        <View className="bg-white p-6 rounded-lg w-3/4">
+          <Text className="text-lg font-psemibold mb-4 text-center">View Remarks</Text>
+          {batches.length > 0 ? (
+            batches.map((batch) => (
+              <View key={batch.id}>
+
+                <Text className="text-md font-psemibold mb-2">Day 5 Remarks:</Text>
+                <Text className="border-2 border-gray-400 p-2 rounded-md mb-4 h-20">
+                  {batch.batchRemarks.day5}
+                </Text>
+
+                <Text className="text-md font-psemibold mb-2">Day 10 Remarks:</Text>
+                <Text className="border-2 border-gray-400 p-2 rounded-md mb-4 h-20">
+                  {batch.batchRemarks.day10}
+                </Text>
+
+                <Text className="text-md font-psemibold mb-2">Day 15 Remarks:</Text>
+                <Text className="border-2 border-gray-400 p-2 rounded-md mb-4 h-20">
+                  {batch.batchRemarks.day15}
+                </Text>
+              </View>
+            ))
+          ) : (
+            <Text>No batches available.</Text>
+          )}
+
+          <View className="flex-row justify-end mt-4">
+            <TouchableOpacity
+              onPress={() => setRemarksModalVisible(false)}
+              className="bg-[#5f432c] py-2 px-4 rounded-lg w-1/2 mr-1"
+            >
+              <Text className="text-center text-white font-psemibold">Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+
+  </SafeAreaView>
+
+);
+};
+export default Home;

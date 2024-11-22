@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "985238711376",
+    "project_id": "hatchifyapp",
+    "storage_bucket": "hatchifyapp.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:985238711376:android:c9b33958645e4aa2fcb555",
+        "android_client_info": {
+          "package_name": "com.helloworld"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAXTIst9hiKGSA7Bk_Hb5lQBZ8WW_vHgzw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
