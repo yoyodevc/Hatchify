@@ -4,7 +4,7 @@
     "slug": "Hatchify",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/testicon.png",
+    "icon": "./assets/images/hatchifyeyes.png",
     "scheme": "myapp",
     "userInterfaceStyle": "automatic",
     "splash": {
@@ -17,7 +17,7 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
+        "foregroundImage": "./assets/hatchifyeyes.png",
         "backgroundColor": "#ffffff"
       },
       "package": "com.yoyodev.Hatchify"
@@ -32,6 +32,11 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "7e946fc9-7e6a-447a-aaeb-d6caa2809ec7"
+      }
     }
   }
 }

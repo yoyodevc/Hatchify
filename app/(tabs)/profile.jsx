@@ -10,6 +10,7 @@ import avatar1 from '../../assets/images/avatar1.jpg';
 import avatar2 from '../../assets/images/avatar2.jpg';
 import avatar3 from '../../assets/images/avatar3.jpg';
 import logout from '../../assets/icons/logout.png';
+import info from "../../assets/icons/info.png"
 
 const { width } = Dimensions.get('window');
 const scaleFontSize = (size) => (width / 375) * size;
@@ -23,6 +24,10 @@ const Profile = () => {
   const [isRefreshing, setIsRefreshing] = useState(false); 
   const [isEditingMobile, setIsEditingMobile] = useState(false);
   const [editedMobile, setEditedMobile] = useState('');
+  const [batchRemarks, setBatchRemarks] = useState(null);
+  const [remarksModalVisible, setRemarksModalVisible] = useState(false); 
+  const [isReadOnly, setIsReadOnly] = useState(false); 
+  const [emailWidth, setEmailWidth] = useState(0);
   const db = getFirestore(); 
 
   useEffect(() => {
@@ -53,12 +58,29 @@ const Profile = () => {
     const user = auth.currentUser;
     if (user) {
       const batchesRef = collection(db, 'batches');
-      const q = query(batchesRef, where('status', '==', 'finished'));
+      
+      const q = query(
+        batchesRef,
+        where('status', '==', 'finished'),
+        where('uid', '==', user.uid)
+      );
   
       const unsubscribe = onSnapshot(q, (querySnapshot) => {
         const batches = [];
         querySnapshot.forEach((doc) => {
-          batches.push({ id: doc.id, ...doc.data() });
+          const batchData = doc.data();
+          
+          const remarks = {
+            day5: batchData.day5 || 'No remarks available.', 
+            day10: batchData.day10 || 'No remarks available.',
+            day15: batchData.day15 || 'No remarks available.',
+          };
+  
+          batches.push({ 
+            id: doc.id, 
+            ...batchData, 
+            remarks: remarks
+          });
         });
         setBatches(batches);
       }, (error) => {
@@ -69,8 +91,12 @@ const Profile = () => {
     }
   };
 
+  const handleBatchSelection = (selectedBatch) => {
+    setBatchRemarks(selectedBatch.remarks); 
+    setRemarksModalVisible(true); 
+  };
   const saveMobileNumber = async () => {
-    if (!editedMobile.trim()) return; // Ensure mobile number is not empty
+    if (!editedMobile.trim()) return; 
     
     Alert.alert(
       'Update Mobile Number',
@@ -86,7 +112,7 @@ const Profile = () => {
                 const userDocRef = doc(db, 'users', user.uid);
                 await updateDoc(userDocRef, { mobilenum: editedMobile });
                 setUserData({ ...userData, mobilenum: editedMobile });
-                setIsEditingMobile(false); // Exit edit mode
+                setIsEditingMobile(false); 
               }
             } catch (error) {
               console.error('Error updating mobile number:', error);
@@ -97,6 +123,14 @@ const Profile = () => {
       { cancelable: true }
     );
   };
+
+  const handleEmailLayout = (event) => {
+    const { width } = event.nativeEvent.layout;
+    console.log('Email Width:', width); 
+    setEmailWidth(width);
+  };
+  
+  
 
   const handleLogout = async () => {
     Alert.alert(
@@ -142,13 +176,21 @@ const Profile = () => {
         <Image source={profileImage} className="w-32 h-32 rounded-full mr-5" />
         <View>
           <Text className="text-lg font-pbold">{userData.username}</Text>
-          <Text 
-            className="text-sm text-gray-600 mt-1" 
-            numberOfLines={1} 
-            ellipsizeMode="tail" 
-            style={{ maxWidth: '90%', fontSize: scaleFontSize(14) }}>
+          
+          <View onLayout={handleEmailLayout}>
+          <Text
+            className="text-sm text-gray-600 mt-1"
+            style={{
+              width: 200,  // Set a fixed width for testing truncation
+              fontSize: scaleFontSize(14),
+            }}
+            numberOfLines={1}
+            ellipsizeMode="tail"
+          >
             {userData.email}
           </Text>
+          </View>
+
           
           <View className="flex-row items-center mt-2">
             {isEditingMobile ? (
@@ -156,7 +198,7 @@ const Profile = () => {
                 value={editedMobile}
                 onChangeText={setEditedMobile}
                 keyboardType="phone-pad"
-                className="text-sm text-gray-600 mr-2 w-24" 
+                className="text-sm text-gray-600 mr-2 w-20" 
                 placeholder="Enter mobile number"
               />
             ) : (
@@ -174,6 +216,7 @@ const Profile = () => {
               <Text className="text-blue-600 font-bold text-sm">{isEditingMobile ? 'Save' : 'Edit'}</Text>
             </TouchableOpacity>
           </View>
+          
         </View>
       </View>
 
@@ -208,18 +251,26 @@ const Profile = () => {
     </Modal>
   );
 
-  const renderBatchItem = ({ item }) => (
-    <View className="bg-gray-100 p-4 rounded-lg mb-4 shadow-sm"> 
-      <Text className="text-lg font-pbold">Tray Name: {item.batchName}</Text>
-      <Text className="font-pmedium">Start Date: {item.startDate}</Text>
-      <Text className="font-pmedium">End Date: {item.endDate}</Text>
-      <Text className="font-pmedium">Number of Eggs: {item.numberOfEggs}</Text>
-      <Text className="font-pmedium">Successful Hatches: {item.hatches}</Text>
-      <Text className="font-pmedium">Status: {item.status}</Text>
-    </View>
-  );
+const renderBatchItem = ({ item }) => (
+  <View className="bg-[#ede8d0] p-4 rounded-lg mb-4 shadow-sm"> 
+    <TouchableOpacity
+      onPress={() => handleBatchSelection(item)} // Pass the selected batch to the modal
+      className="absolute top-2 right-2 w-10 h-10 rounded-full bg-[] flex items-center justify-center z-10"
+    >
+      <Image source={info} className="w-5 h-5" alt="Information Icon" />
+    </TouchableOpacity>
+
+    <Text className="text-lg font-pbold">Tray Name: {item.batchName}</Text>
+    <Text className="font-pmedium">Start Date: {item.startDate}</Text>
+    <Text className="font-pmedium">End Date: {item.endDate}</Text>
+    <Text className="font-pmedium">Number of Eggs: {item.numberOfEggs}</Text>
+    <Text className="font-pmedium">Successful Hatches: {item.hatches}</Text>
+    <Text className="font-pmedium">Status: {item.status}</Text>
+  </View>
+);
 
   return (
+    <>
     <FlatList
       className="flex-1 bg-white p-4"
       data={batches}
@@ -231,7 +282,7 @@ const Profile = () => {
           {renderHeader()}
           <TouchableOpacity 
             onPress={() => setModalVisible(true)}
-            className="mt-4 ml-10"
+            className="mt-4 ml-8"
           >
             <Text className="text-blue-600 font-psemibold underline">Change Avatar</Text>
           </TouchableOpacity>
@@ -242,7 +293,41 @@ const Profile = () => {
         </>
       }
     />
+
+      <Modal
+        visible={remarksModalVisible}
+        transparent={true}
+        animationType="bond"
+        onRequestClose={() => setRemarksModalVisible(false)}
+      >
+        <View className="flex-1 justify-center items-center bg-black/50">
+          <View className="bg-white p-6 rounded-lg w-3/4">
+            <Text className="text-lg font-psemibold mb-4 text-center">View Remarks</Text>
+            <Text className="text-md font-psemibold mb-2">Day 5 Remarks:</Text>
+            <Text className="border-2 border-gray-400 p-2 rounded-md mb-4 h-20">
+              {batchRemarks?.day5 || 'No remarks available.'}
+            </Text>
+            <Text className="text-md font-psemibold mb-2">Day 10 Remarks:</Text>
+            <Text className="border-2 border-gray-400 p-2 rounded-md mb-4 h-20">
+              {batchRemarks?.day10 || 'No remarks available.'}
+            </Text>
+            <Text className="text-md font-psemibold mb-2">Day 15 Remarks:</Text>
+            <Text className="border-2 border-gray-400 p-2 rounded-md mb-4 h-20">
+              {batchRemarks?.day15 || 'No remarks available.'}
+            </Text>
+            <TouchableOpacity
+              onPress={() => setRemarksModalVisible(false)}
+              className="bg-[#5f432c] py-2 px-4 rounded-lg mt-4"
+            >
+              <Text className="text-white text-center font-psemibold">Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+  </>
   );
+
 };
 
 export default Profile;

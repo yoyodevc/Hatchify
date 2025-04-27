@@ -1,10 +1,13 @@
-import { Text, View, TouchableOpacity, TextInput, Modal, Image, Alert, FlatList, RefreshControl } from 'react-native';
+import { Text, View, TouchableOpacity, TextInput, Modal, Image, Alert, FlatList, RefreshControl, ScrollView } from 'react-native';
 import React, { useState, useEffect } from 'react';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { collection, addDoc, query, where, getDocs, doc, updateDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
+import { collection, addDoc, query, where, getDocs, doc, updateDoc, deleteDoc, onSnapshot, getDoc } from 'firebase/firestore';
 import { auth, db } from '../../firebaseConfig'; 
 import { onAuthStateChanged } from 'firebase/auth'; 
 import plusIcon from "../../assets/icons/plus.png";
+import info from "../../assets/icons/info.png"
+import { getDatabase, ref, set, remove } from 'firebase/database';
+
 
 const formatDate = (date) => {
   const day = String(date.getDate()).padStart(2, '0');
@@ -12,6 +15,8 @@ const formatDate = (date) => {
   const year = date.getFullYear();
   return `${month}-${day}-${year}`;
 };
+
+const rtdb = getDatabase();
 
 const CreateBatch = () => {
   const [modalVisible, setModalVisible] = useState(false);
@@ -25,6 +30,10 @@ const CreateBatch = () => {
   const [deleteModalVisible, setDeleteModalVisible] = useState(false); 
   const [batchToDelete, setBatchToDelete] = useState(null);
   const [refreshing, setRefreshing] = useState(false); 
+  const [remarksModalVisible, setRemarksModalVisible] = useState(false);
+  const [selectedBatch, setSelectedBatch] = useState(null); 
+  const [batchRemarks, setBatchRemarks] = useState(''); 
+  const [isReadOnly, setIsReadOnly] = useState(false); 
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
@@ -45,7 +54,16 @@ const CreateBatch = () => {
       const unsubscribe = onSnapshot(batchQuery, (querySnapshot) => {
         const fetchedBatches = [];
         querySnapshot.forEach((doc) => {
-          fetchedBatches.push({ id: doc.id, ...doc.data() });
+          const batchData = doc.data();
+          fetchedBatches.push({
+            id: doc.id,
+            ...batchData,
+            batchRemarks: {
+              day5: batchData.day5 || 'No remarks available.',
+              day10: batchData.day10 || 'No remarks available.',
+              day15: batchData.day15 || 'No remarks available.',
+            }
+          });
         });
         setBatches(fetchedBatches);
       }, (error) => {
@@ -88,39 +106,87 @@ const CreateBatch = () => {
       return;
     }
   
-    // Check for existing ongoing batches
-    const ongoingBatchesQuery = query(
-      collection(db, 'batches'),
-      where('uid', '==', uid),
-      where('status', '==', 'ongoing')
-    );
-    
-    const ongoingBatchesSnapshot = await getDocs(ongoingBatchesQuery);
-    
-    if (!editBatchId && ongoingBatchesSnapshot.size > 0) {
-      Alert.alert('Error', 'Only 1 ongoing batch at a time is allowed!');
-      return;
-    }
-  
     try {
+      // Check for ongoing batches
+      const ongoingBatchesQuery = query(
+        collection(db, 'batches'),
+        where('uid', '==', uid),
+        where('status', '==', 'ongoing')
+      );
+  
+      const ongoingBatchesSnapshot = await getDocs(ongoingBatchesQuery);
+  
+      if (!editBatchId && ongoingBatchesSnapshot.size > 0) {
+        Alert.alert('Error', 'Only 1 ongoing batch at a time is allowed!');
+        return;
+      }
+  
+      // Fetch user email and mobilenum
+      const userEmail = auth.currentUser?.email;
+      const userDocRef = doc(db, 'users', uid);
+      const userDocSnap = await getDoc(userDocRef);
+  
+      if (!userDocSnap.exists()) {
+        Alert.alert('Error', 'User data not found!');
+        return;
+      }
+  
+      const { mobilenum } = userDocSnap.data();
+  
+      if (!mobilenum) {
+        Alert.alert('Error', 'Please save your mobile number first.');
+        return;
+      }
+  
       if (editBatchId) {
+        // Update functionality
         const batchRef = doc(db, 'batches', editBatchId);
-        await updateDoc(batchRef, {
+  
+        // Only update relevant fields, excluding `status`
+        const updatedData = {
           batchName,
           startDate: batchDate,
           numberOfEggs,
+          email: userEmail,
+          mobilenum,
+        };
+  
+        await updateDoc(batchRef, updatedData);
+  
+        // Update RTDB
+        const rtdbBatchRef = ref(rtdb, `batches/${editBatchId}`);
+        await set(rtdbBatchRef, {
+          batchName,
+          startDate: batchDate,
+          mobilenum,
         });
+  
         Alert.alert('Success', 'Batch updated successfully!');
       } else {
-        await addDoc(collection(db, 'batches'), {
+        // Add functionality
+        const batchData = {
           batchName,
           startDate: batchDate,
           numberOfEggs,
-          status: 'ongoing',
+          status: 'ongoing', // Add status only during addition
+          email: userEmail,
+          mobilenum,
           uid,
+        };
+  
+        const newBatchRef = await addDoc(collection(db, 'batches'), batchData);
+  
+        // Add batch data to RTDB
+        const rtdbBatchRef = ref(rtdb, `batches/${newBatchRef.id}`);
+        await set(rtdbBatchRef, {
+          batchName,
+          startDate: batchDate,
+          mobilenum,
         });
+  
         Alert.alert('Success', 'Batch added successfully!');
       }
+  
       setModalVisible(false);
       resetForm();
       fetchBatches(uid);
@@ -128,9 +194,8 @@ const CreateBatch = () => {
       Alert.alert('Error', 'Failed to add/update batch. Please try again.');
       console.error('Error adding/updating batch: ', error);
     }
-  };
+  };  
   
-
   const resetForm = () => {
     setBatchName('');
     setBatchDate(formatDate(new Date()));
@@ -154,6 +219,9 @@ const CreateBatch = () => {
   const handleConfirmDelete = async () => {
     try {
       await deleteDoc(doc(db, 'batches', batchToDelete.id));
+      const rtdbBatchRef = ref(rtdb, `batches/${batchToDelete.id}`);
+      await remove(rtdbBatchRef);
+  
       Alert.alert('Success', 'Batch deleted successfully!');
       fetchBatches(uid);
     } catch (error) {
@@ -169,21 +237,42 @@ const CreateBatch = () => {
     const [month, day, year] = item.startDate.split('-').map(Number);
     const startDate = new Date(year, month - 1, day);
     const currentDate = new Date();
+  
     const dayDifference = Math.floor((currentDate - startDate) / (1000 * 60 * 60 * 24));
-
+  
     return (
-      <View className="bg-[#ede8d0] p-4 rounded-lg my-2 w-full">
-        <Text className="font-pbold">Batch Name: {item.batchName}</Text>
+      <View className="bg-[#ede8d0] p-4 rounded-lg my-2 w-full relative" key={item.id}>
+        <TouchableOpacity
+          onPress={() => {
+            setSelectedBatch(item);
+            setRemarksModalVisible(true);
+            setIsReadOnly(true);
+          }}
+          className="absolute top-2 right-2 w-10 h-10 rounded-full bg-[] flex items-center justify-center z-10"
+        >
+          <Image source={info} className="w-5 h-5" alt="Information Icon" />
+        </TouchableOpacity>
+  
+        <Text className="font-pbold text-lg">Batch Name: {item.batchName}</Text>
         <Text className="font-pmedium">Start Date: {item.startDate}</Text>
-        <Text className="font-pmedium">Day: {dayDifference + 1}</Text>
+  
+        {item.status === 'finished' ? (
+          <>
+            {/* <Text className="font-pmedium">Day: Ended</Text> */}
+            <Text className="font-pmedium">End Date: {item.endDate || 'N/A'}</Text>
+          </>
+        ) : (
+          <Text className="font-pmedium">Day: {dayDifference + 1}</Text>
+        )}
+  
         <Text className="font-pmedium">Number of Eggs: {item.numberOfEggs}</Text>
         <Text className="font-pmedium">Status: {item.status}</Text>
-
+  
         <View className="flex-row justify-end mt-2">
           <TouchableOpacity onPress={() => handleEdit(item)} className="mr-2 bg-yellow-500 p-2 rounded">
             <Text className="text-white">Edit</Text>
           </TouchableOpacity>
-
+  
           <TouchableOpacity onPress={() => handleDeleteRequest(item)} className="bg-[#950606] p-2 rounded">
             <Text className="text-white">Delete</Text>
           </TouchableOpacity>
@@ -198,7 +287,7 @@ const CreateBatch = () => {
         <Text className="text-2xl font-psemibold mb-5 mt-4">Batches</Text>
 
         <TouchableOpacity 
-          className="absolute bottom-8 right-8 z-10"
+          className="absolute bottom-10 right-4 z-10"
           onPress={() => setModalVisible(true)}
         >
           <Image source={plusIcon} className="w-12 h-12" resizeMode="contain" />
@@ -256,7 +345,7 @@ const CreateBatch = () => {
 
         
         <Modal
-          animationType="fade"
+          animationType="bond"
           transparent={true}
           visible={deleteModalVisible}
           onRequestClose={() => setDeleteModalVisible(false)}
@@ -280,7 +369,50 @@ const CreateBatch = () => {
           </View>
         </Modal>
 
-        
+        <Modal
+          visible={remarksModalVisible}
+          transparent={true}
+          animationType="bond"
+          onRequestClose={() => setRemarksModalVisible(false)}
+        >
+          <View className="flex-1 justify-center items-center bg-black/50">
+            <View className="bg-white p-6 rounded-lg w-3/4">
+              <Text className="text-lg font-psemibold mb-4 text-center">View Remarks</Text>
+
+              {/* Display remarks only for the selected batch */}
+              {selectedBatch ? (
+                <View>
+                  <Text className="text-md font-psemibold mb-2">Day 5 Remarks:</Text>
+                  <Text className="border-2 border-gray-400 p-2 rounded-md mb-4 h-20">
+                    {selectedBatch.batchRemarks?.day5 || 'No remarks available.'}
+                  </Text>
+
+                  <Text className="text-md font-psemibold mb-2">Day 10 Remarks:</Text>
+                  <Text className="border-2 border-gray-400 p-2 rounded-md mb-4 h-20">
+                    {selectedBatch.batchRemarks?.day10 || 'No remarks available.'}
+                  </Text>
+
+                  <Text className="text-md font-psemibold mb-2">Day 15 Remarks:</Text>
+                  <Text className="border-2 border-gray-400 p-2 rounded-md mb-4 h-20">
+                    {selectedBatch.batchRemarks?.day15 || 'No remarks available.'}
+                  </Text>
+                </View>
+              ) : (
+                <Text>No batch selected.</Text>
+              )}
+
+              <View className="flex-row justify-end mt-4">
+                <TouchableOpacity
+                  onPress={() => setRemarksModalVisible(false)}
+                  className="bg-[#5f432c] py-2 px-4 rounded-lg w-1/2 mr-1"
+                >
+                  <Text className="text-center text-white font-psemibold">Close</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
+
         {loading ? (
           <Text>Loading batches...</Text>
         ) : (

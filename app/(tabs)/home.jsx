@@ -4,14 +4,15 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { auth } from '../../firebaseConfig';
 import { getFirestore, doc, getDoc, collection, query, where, getDocs, updateDoc, setDoc, addDoc, Timestamp, onSnapshot } from 'firebase/firestore';
-import { getDatabase, ref, onValue, set } from 'firebase/database';
+import { getDatabase, ref, onValue, set, off, remove } from 'firebase/database';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import warning from "../../assets/icons/warning.png";
 import success from "../../assets/icons/success.png";
 import info from "../../assets/icons/info.png";
 import notificationIcon from '../../assets/icons/notification.png';
-
 import Notification from '../notification/Notification';
+import axios from 'axios';
 
 const Home = () => {
   const [username, setUsername] = useState('');
@@ -22,16 +23,15 @@ const Home = () => {
   const [refreshing, setRefreshing] = useState(false);
   const [temperature, setTemperature] = useState(0);
   const [humidity, setHumidity] = useState(0);
-
+  //states for modal
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedBatch, setSelectedBatch] = useState(null);
   const [remarksModalVisible, setRemarksModalVisible] = useState(false); 
   const [hatchedEggs, setHatchedEggs] = useState(''); 
   const [batchRemarks, setBatchRemarks] = useState(''); 
- 
   const [successRateModalVisible, setSuccessRateModalVisible] = useState(false);
   const [isReadOnly, setIsReadOnly] = useState(false); 
-
+  //states for notification
   const [shouldCreateNotification, setShouldCreateNotification] = useState(false);
   const [notificationBatch, setNotificationBatch] = useState(null);
   const [notifications, setNotifications] = useState([]);
@@ -108,7 +108,7 @@ const Home = () => {
             } else if ([5, 10, 15].includes(displayDay)) {
                 createNotification(item, `The batch ${item.batchName}'s incubation is now at Day ${displayDay} and needs to be candled.`, info);
             } else if (displayDay === 18) {
-                createNotification(item, `The batch ${item.batchName} has entered lockdown mode. Raise the Humidity to 65%.`, warning);
+                createNotification(item, `The batch ${item.batchName} has entered lockdown mode. Raise the Humidity to 60% - 65%.`, warning);
             } else if (displayDay === 21) {
                 createNotification(item, `The batch ${item.batchName} is expected to finish incubating today.`, info);
             }
@@ -126,13 +126,14 @@ useEffect(() => {
     }
 }, [shouldCreateNotification, notificationBatch]);
 
-  const fetchTemperatureAndHumidity = () => {
-    const tempRef = ref(rtdb, 'temperature');
-    const humidityRef = ref(rtdb, 'humidity');
+const fetchTemperatureAndHumidity = () => {
+  const tempRef = ref(rtdb, 'temperature');
+  const humidityRef = ref(rtdb, 'humidity');
 
+  const fetchData = () => {
     onValue(tempRef, (snapshot) => {
       const tempValue = snapshot.val();
-      console.log('Temperature:', tempValue);
+      //console.log('Temperature:', tempValue);
       setTemperature(tempValue);
     }, (error) => {
       console.error('Error fetching temperature:', error);
@@ -140,13 +141,35 @@ useEffect(() => {
 
     onValue(humidityRef, (snapshot) => {
       const humidityValue = snapshot.val();
-      console.log('Humidity:', humidityValue);
+      //console.log('Humidity:', humidityValue);
       const formattedHumidity = `${parseFloat(humidityValue).toFixed(1)}%`;
       setHumidity(formattedHumidity);
     }, (error) => {
       console.error('Error fetching humidity:', error);
     });
   };
+
+  const stopFetching = () => {
+    off(tempRef);
+    off(humidityRef);
+    //console.log('RTDB retrieval off');
+  };
+
+  return { fetchData, stopFetching };
+};
+
+const { fetchData, stopFetching } = fetchTemperatureAndHumidity();
+
+useEffect(() => {
+  if (notificationsVisible) {
+    stopFetching();
+  } else {
+    fetchData();
+  }
+  return () => {
+    stopFetching();
+  };
+}, [notificationsVisible]);
 
   useEffect(() => {
     fetchUserData();
@@ -181,6 +204,151 @@ useEffect(() => {
     fetchUserData();
   };
 
+  //sensor data to firestore
+  const writeSensorDataToFirestore = async (temperature, humidity) => {
+    try {
+      const sensorDataRef = doc(db, 'sensor', 'sensordata');
+      await setDoc(sensorDataRef, {
+        temperature: temperature,
+        humidity: humidity,
+        timestamp: Timestamp.now()
+      }, { merge: true });
+      console.log('Sensor data written to Firestore');
+    } catch (error) {
+      console.error('Error writing sensor data to Firestore:', error);
+    }
+  };
+
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      if (temperature !== 0 && humidity !== 0) {
+        writeSensorDataToFirestore(temperature, humidity);
+      }
+    }, 300000); //5 minutes
+    return () => clearInterval(intervalId);
+  }, []);
+
+  //fetch sensor data from firestore
+  const fetchSensorDataFromFirestore = async () => {
+    try {
+      const sensorDataRef = doc(db, 'sensor', 'sensordata');
+      const sensorDataSnapshot = await getDoc(sensorDataRef);
+  
+      if (sensorDataSnapshot.exists()) {
+        const data = sensorDataSnapshot.data();
+        const temperaturef = data.temperature;
+        const humidityf = data.humidity;
+  
+        console.log('Fetched sensor data:', { temperaturef, humidityf });
+        return { temperaturef, humidityf };
+      } else {
+        console.log('No sensor data found in Firestore.');
+        return null;
+      }
+    } catch (error) {
+      console.error('Error fetching sensor data from Firestore:', error);
+      return null;
+    }
+  };
+
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      fetchSensorDataFromFirestore();
+    }, 300005); //5 minutes
+    return () => clearInterval(intervalId);
+  }, []);
+
+  //sending email (sensor)
+  const sendEmailViaSendGrid2 = async (subject, body, recipientEmail) => {
+    const SENDGRID_API_KEY = 'hidden';
+    const SENDGRID_EMAIL = 'hidden';
+  
+    try {
+      const response = await axios.post(
+        'https://api.sendgrid.com/v3/mail/send',
+        {
+          personalizations: [
+            {
+              to: [{ email: recipientEmail }],
+              subject: subject,
+            },
+          ],
+          from: { email: SENDGRID_EMAIL },
+          content: [
+            {
+              type: 'text/plain',
+              value: body,
+            },
+          ],
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${SENDGRID_API_KEY}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+  
+      if (response.status === 202) {
+        console.log('Email sent successfully.');
+      } else {
+        console.error('Failed to send email:', response.status, response.data);
+      }
+    } catch (error) {
+      console.error('Error sending email via SendGrid:', error.response?.data || error.message);
+    }
+  };
+  
+  //trigger / message creation for notification
+  const checkAndSendCriticalAlerts = async () => {
+    const sensorDataRef = doc(db, 'sensor', 'sensordata');
+    const user = auth.currentUser;
+  
+    if (!user) {
+      console.error('No user is currently logged in.');
+      return;
+    }
+  
+    const recipientEmail = user.email;
+  
+    try {
+      const sensorDataSnapshot = await getDoc(sensorDataRef);
+      
+      if (sensorDataSnapshot.exists()) {
+        const data = sensorDataSnapshot.data();
+        const temperaturef = data.temperature;
+        const humidityfString = data.humidity;
+
+        const humidityf = parseFloat(humidityfString.replace('%', ''));
+  
+        console.log('Fetched sensor data:', { temperaturef, humidityf });
+  
+        if (temperaturef < 35 || temperaturef > 39) {
+          const temperatureMessage = `The incubator's temperature is critical at ${temperaturef}°C. Please check the incubator.`;
+          sendEmailViaSendGrid2('Critical Temperature Alert', temperatureMessage, recipientEmail);
+        }
+
+        if (humidityf < 40 || humidityf > 70) {
+          const humidityMessage = `The incubator's humidity is critical at ${humidityf}%. Please check the incubator.`;
+          sendEmailViaSendGrid2('Critical Humidity Alert', humidityMessage, recipientEmail);
+        }
+      } else {
+        console.log('No sensor data found in Firestore.');
+      }
+    } catch (error) {
+      console.error('Error fetching sensor data from Firestore:', error);
+    }
+  };
+  
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      checkAndSendCriticalAlerts();
+    }, 300000); //15 minutes = 900000
+  
+    return () => clearInterval(intervalId);  
+  }, []);
+
+  //handler para maiwasan unexpected routing
   const handleBackButton = () => {
     Alert.alert(
       'Confirm Exit',
@@ -209,39 +377,112 @@ useEffect(() => {
   );
   
   const [unreadNotificationsCount, setUnreadNotificationsCount] = useState(0);
-  const toggleNotifications = () => setNotificationsVisible((prev) => !prev);
+  //const toggleNotifications = () => setNotificationsVisible((prev) => !prev);
   
+  //alerts api
+  const sendEmailViaSendGrid = async (to, subject, body) => {
+    const SENDGRID_API_KEY = 'hidden';
+    const SENDGRID_EMAIL = 'hidden';
+  
+    try {
+      const response = await axios.post(
+        'https://api.sendgrid.com/v3/mail/send',
+        {
+          personalizations: [
+            {
+              to: [{ email: to }],
+              subject: subject,
+            },
+          ],
+          from: { email: SENDGRID_EMAIL },
+          content: [
+            {
+              type: 'text/plain',
+              value: body,
+            },
+          ],
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${SENDGRID_API_KEY}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+  
+      if (response.status === 202) {
+        console.log('Email sent successfully.');
+        return true;
+      } else {
+        console.error('Failed to send email:', response.status, response.data);
+        return false;
+      }
+    } catch (error) {
+      console.error('Error sending email via SendGrid:', error.response?.data || error.message);
+      return false;
+    }
+  };
+  
+  //notification logic
   const createNotification = async (batch, message, icon) => {
     const db = getFirestore();
     const user = auth.currentUser;
   
-    const newNotificationEntry = {
-      batchid: batch.id,
-      uid: user.uid,
-      message: message,
-      icon: icon,
-      time: Timestamp.now(),
-      markasread: false, 
-    };
-  
+    if (!user) {
+      console.error('User is not authenticated.');
+      return;
+    }
     try {
-      const batchNotifRef = collection(db, 'batchNotif');
-      const q = query(
-        batchNotifRef,
-        where('batchid', '==', batch.id),
-        where('message', '==', newNotificationEntry.message),
-        where('icon', '==', newNotificationEntry.icon)
-      );
+      const userDocRef = doc(db, 'users', user.uid);
+      const userDoc = await getDoc(userDocRef);
   
-      const querySnapshot = await getDocs(q);
-  
-      if (!querySnapshot.empty) {
+      if (!userDoc.exists()) {
+        console.error('User data not found in Firestore.');
         return;
       }
-      await addDoc(batchNotifRef, newNotificationEntry);
-      console.log(`Notification created for batch: ${batch.batchName}`);
+  
+      const userData = userDoc.data();
+      const userMobileNum = userData.mobilenum || "Unknown";
+      const notificationData = {
+        batchid: batch.id,
+        uid: user.uid,
+        mobilenum: userMobileNum,
+        message: message,
+        icon: icon,
+        time: Timestamp.now(),
+        markasread: false,
+        sms: "no",
+        email: user.email,
+      };
+  
+      const batchNotifCollection = collection(db, 'batchNotif');
+  
+      const duplicateCheckQuery = query(
+        batchNotifCollection,
+        where('batchid', '==', notificationData.batchid),
+        where('message', '==', notificationData.message),
+      );
+      const existingNotifications = await getDocs(duplicateCheckQuery);
+  
+      if (!existingNotifications.empty) {
+        console.log('Duplicate notification detected. No new notification created.');
+        return;
+      }
+      const docRef = await addDoc(batchNotifCollection, notificationData);
+      console.log(`Notification successfully created for batch: ${batch.batchName}`);
+
+      const emailSubject = `New Notification for Batch ${batch.batchName}`;
+      const emailBody = message;
+  
+      const emailSent = await sendEmailViaSendGrid(user.email, emailSubject, emailBody);
+  
+      if (emailSent) {
+        console.log('Email sent successfully.');
+        await updateDoc(doc(db, 'batchNotif', docRef.id), { sms: 'yes' });
+        console.log('Notification SMS field marked as "yes".');
+      }
     } catch (error) {
-      console.error('Error creating notification:', error);
+      console.error('Error while creating notification or sending email:', error);
     }
   };
 
@@ -299,9 +540,9 @@ useEffect(() => {
 
     updatedBatchStatuses[item.id] = displayDay;
 
-    const mode = displayDay > 18 ? 'Lockdown' : 'Incubating';
+    const mode = displayDay > 17 ? 'Lockdown' : 'Incubating'; //17 dapat to
     const db = getDatabase();
-    const modeRef = ref(db, '/mode');
+    const modeRef = ref(rtdb, '/mode');
     set(modeRef, mode);
   });
 
@@ -335,7 +576,7 @@ const handleCloseModal = () => {
           <Image source={info} className="w-5 h-5" alt="Information Icon" />
         </TouchableOpacity>
 
-        <Text className="font-pbold">Batch Name: {item.batchName}</Text>
+        <Text className="font-pbold text-lg">Batch Name: {item.batchName}</Text>
         <Text className="font-pmedium">Start Date: {item.startDate}</Text>
         <Text className="font-pmedium">Day: {batchStatus} 
           {batchStatus >= 18 && batchStatus <= 21 && (
@@ -375,35 +616,47 @@ const handleCloseModal = () => {
 
   const handleFinishBatch = async () => {
     if (selectedBatch) {
-      const totalEggs = selectedBatch.numberOfEggs; 
-      const hatchesCount = Number(hatchedEggs); 
+      const totalEggs = selectedBatch.numberOfEggs;
+      const hatchesCount = Number(hatchedEggs);
   
       if (hatchesCount > totalEggs) {
-        Alert.alert('Error', `Hatched eggs cannot exceed the total number of eggs, which is ${totalEggs}!`);
+        Alert.alert('Error', `Please input a number that does not exceed the batch's number of eggs, which is ${totalEggs}!`);
         return;
       }
+  
       try {
         const batchDocRef = doc(db, 'batches', selectedBatch.id);
-        const formattedDate = new Date().toLocaleDateString('en-US', {
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit'
-        }).replace(/\//g, '-'); 
+        const formattedDate = new Date()
+          .toLocaleDateString('en-US', {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+          })
+          .replace(/\//g, '-');
   
         await updateDoc(batchDocRef, {
           hatches: hatchesCount,
           status: 'finished',
-          endDate: formattedDate
+          endDate: formattedDate,
         });
-        
-        Alert.alert('Success', `Batch updated with ${hatchesCount} hatched eggs and marked as finished.`);
-        console.log(`Batch updated with Hatched Eggs: ${hatchedEggs} and status: finished`);
+  
+        const rtdbBatchRef = ref(rtdb, `batches/${selectedBatch.id}`);
+        await remove(rtdbBatchRef);
+  
+        Alert.alert(
+          'Success',
+          `Batch updated with ${hatchesCount} hatched eggs and marked as finished.`
+        );
+        console.log(
+          `Batch updated with Hatched Eggs: ${hatchedEggs}, status: finished, and removed from RTDB`
+        );
+  
         fetchUserData();
         setModalVisible(false);
         setHatchedEggs('');
       } catch (error) {
         console.error('Error updating batch hatches:', error);
-        Alert.alert('Error', 'Failed to update the hatches. Please try again.');
+        Alert.alert('Error', 'Failed to update the batch. Please try again.');
       }
     }
   };
@@ -443,7 +696,12 @@ const handleCloseModal = () => {
     }
   };
 
-  return (
+const toggleNotifications = () => {
+  console.log(notificationsVisible ? "Notification panel closed" : "Notification panel opened");
+  setNotificationsVisible((prev) => !prev);
+};
+
+return (
   <SafeAreaView className="flex-1">
     {loading ? (
       <View className="flex-1 justify-center items-center">
@@ -464,8 +722,15 @@ const handleCloseModal = () => {
                 <Text className="font-psemibold text-2xl">{username}</Text>
               </View>
 
-              <TouchableOpacity onPress={toggleNotifications} className="justify-center mt-2 mx-3 md:mx-4 lg:mx-5">
-                <Image source={notificationIcon} className="w-8 md:w-7 lg:w-8 h-8" resizeMode="contain" />
+              <TouchableOpacity
+                onPress={toggleNotifications} 
+                className="justify-center mt-2 mx-3 md:mx-4 lg:mx-5"
+              >
+                <Image
+                  source={notificationIcon}
+                  className="w-8 md:w-7 lg:w-8 h-8"
+                  resizeMode="contain"
+                />
                 {unreadNotificationsCount > 0 && (
                   <View className="absolute top-0 right-0 bg-red-500 w-3 h-3 rounded-full" />
                 )}
@@ -494,8 +759,8 @@ const handleCloseModal = () => {
                 <Text 
                   className={`font-psemibold text-4xl mt-2 ${
                     batches.length > 0 && batches[0].status === 'ongoing'
-                      ? (humidity <= '59%' || humidity >= '71%' ? 'text-red-500' : '') 
-                      : (humidity <= '44%' || humidity >= '56%' ? 'text-red-500' : '')
+                      ? (humidity <= '39%' || humidity >= '69%' ? 'text-red-500' : '') 
+                      : (humidity <= '39%' || humidity >= '69%' ? 'text-red-500' : '')
                   }`}
                 >
                   {humidity}
