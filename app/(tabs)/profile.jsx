@@ -95,20 +95,21 @@ const Profile = () => {
     setBatchRemarks(selectedBatch.remarks); 
     setRemarksModalVisible(true); 
   };
+  //function for saving user's number
   const saveMobileNumber = async () => {
-    if (!editedMobile.trim()) return; 
+    if (!editedMobile.trim()) return; //return if the input is empty.
     
-    Alert.alert(
+    Alert.alert( //task confirmation before proceeding
       'Update Mobile Number',
       'Are you sure you want to update your mobile number?',
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: 'Cancel', style: 'cancel' }, //cancel
         {
           text: 'Yes',
           onPress: async () => {
             try {
               const user = auth.currentUser;
-              if (user) {
+              if (user) { //update the mobile number in firebase
                 const userDocRef = doc(db, 'users', user.uid);
                 await updateDoc(userDocRef, { mobilenum: editedMobile });
                 setUserData({ ...userData, mobilenum: editedMobile });
@@ -120,41 +121,45 @@ const Profile = () => {
           },
         },
       ],
-      { cancelable: true }
+      { cancelable: true } //cancel if the user taps outside of the .alert
     );
   };
 
+  //for responsiveness
+  //gets the width of the email text field
   const handleEmailLayout = (event) => {
     const { width } = event.nativeEvent.layout;
     console.log('Email Width:', width); 
+    //saves the width in state
     setEmailWidth(width);
   };
   
   
 
   const handleLogout = async () => {
-    Alert.alert(
+    Alert.alert( //task confirmation before logging out 
       'Confirm Logout',
       'Are you sure you want to logout?',
       [
         { text: 'No', style: 'cancel' },
         { text: 'Yes', onPress: async () => {
-          await signOut(auth);
-          await AsyncStorage.removeItem('userSession');
-          navigation.navigate('(auth)');
+          await signOut(auth); //logout
+          await AsyncStorage.removeItem('userSession'); //clears data from the session
+          navigation.navigate('(auth)'); //redirect to login screen
         }},
       ],
-      { cancelable: false }
+      { cancelable: false } //prevents cancel if tapping outside of alert
     );
   };
 
+  //function to save chosen avatar to firestore
   const chooseAvatar = async (selectedAvatar) => {
     setProfileImage(selectedAvatar);
     setModalVisible(false);
 
     try {
       const user = auth.currentUser; 
-      if (user) {
+      if (user) { //saves the user avatar to db
         const userDocRef = doc(db, 'users', user.uid);
         await updateDoc(userDocRef, { avatar: selectedAvatar });
       }

@@ -48,17 +48,17 @@ const CreateBatch = () => {
   }, []);
 
   const fetchBatches = (userId) => {
-    setLoading(true);
-    try {
+    setLoading(true); //loading circle 
+    try { //query of batches made by the user
       const batchQuery = query(collection(db, 'batches'), where('uid', '==', userId));
-      const unsubscribe = onSnapshot(batchQuery, (querySnapshot) => {
+      const unsubscribe = onSnapshot(batchQuery, (querySnapshot) => { //realtime update listener
         const fetchedBatches = [];
         querySnapshot.forEach((doc) => {
           const batchData = doc.data();
           fetchedBatches.push({
             id: doc.id,
             ...batchData,
-            batchRemarks: {
+            batchRemarks: { //arranges remark data from the db
               day5: batchData.day5 || 'No remarks available.',
               day10: batchData.day10 || 'No remarks available.',
               day15: batchData.day15 || 'No remarks available.',
@@ -77,7 +77,7 @@ const CreateBatch = () => {
     }
   };
   
-  useEffect(() => {
+  useEffect(() => { //to verify user changes and batch info changes.
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
         setUid(user.uid);
@@ -92,7 +92,7 @@ const CreateBatch = () => {
     return () => unsubscribe();
   }, []);
 
-  const handleRefresh = async () => {
+  const handleRefresh = async () => { //handles refresh when the user pulls the screen down
     setRefreshing(true);
     if (uid) {
       await fetchBatches(uid);
@@ -101,7 +101,7 @@ const CreateBatch = () => {
   };
 
   const handleFormSubmit = async () => {
-    if (!batchName || !batchDate || !numberOfEggs) {
+    if (!batchName || !batchDate || !numberOfEggs) { //ensures the fields are populated
       Alert.alert('Error', 'Please fill in all fields');
       return;
     }
@@ -115,7 +115,7 @@ const CreateBatch = () => {
       );
   
       const ongoingBatchesSnapshot = await getDocs(ongoingBatchesQuery);
-  
+      //user cannot create 2 ongoing batches, show an error
       if (!editBatchId && ongoingBatchesSnapshot.size > 0) {
         Alert.alert('Error', 'Only 1 ongoing batch at a time is allowed!');
         return;
@@ -125,7 +125,7 @@ const CreateBatch = () => {
       const userEmail = auth.currentUser?.email;
       const userDocRef = doc(db, 'users', uid);
       const userDocSnap = await getDoc(userDocRef);
-  
+      
       if (!userDocSnap.exists()) {
         Alert.alert('Error', 'User data not found!');
         return;
@@ -163,12 +163,12 @@ const CreateBatch = () => {
   
         Alert.alert('Success', 'Batch updated successfully!');
       } else {
-        // Add functionality
+        // for adding new batch
         const batchData = {
           batchName,
           startDate: batchDate,
           numberOfEggs,
-          status: 'ongoing', // Add status only during addition
+          status: 'ongoing', //ongoing status because it is a new batch
           email: userEmail,
           mobilenum,
           uid,

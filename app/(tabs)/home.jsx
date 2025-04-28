@@ -41,24 +41,25 @@ const Home = () => {
   const rtdb = getDatabase();
     
   const fetchUserData = async () => {
-    setLoading(true);
-    const user = auth.currentUser;
+    setLoading(true); //loading circle
+    const user = auth.currentUser; //check for logged user
 
     if (user) {
-        try {
+        try { //"tries" retrieve user information from db
             const userDocRef = doc(db, 'users', user.uid);
-            const userDoc = await getDoc(userDocRef); 
+            const userDoc = await getDoc(userDocRef);
 
-            if (userDoc.exists()) {
-                const userData = userDoc.data(); 
-                setUsername(userData.username); 
-
+            if (userDoc.exists()) { //sets the username in html to the logged user's username
+                const userData = userDoc.data();
+                setUsername(userData.username);
+                //retrieve batches related to the userid
                 const batchQuery = query(
                     collection(db, 'batches'),
                     where('uid', '==', user.uid),
                     where('status', '==', 'ongoing')
                 );
 
+                //for realtime changes on user's batch info
                 const unsubscribe = onSnapshot(batchQuery, (querySnapshot) => {
                     const fetchedBatches = [];
                     querySnapshot.forEach((doc) => {
@@ -68,26 +69,26 @@ const Home = () => {
                             day10: batchData.day10 || 'No remarks available.',
                             day15: batchData.day15 || 'No remarks available.'
                         };
-                        
+                        //to save batch info with remarks
                         fetchedBatches.push({ id: doc.id, batchRemarks, ...batchData });
                     });
-                    setBatches(fetchedBatches); 
+                    setBatches(fetchedBatches);
                 }, (error) => {
-                    console.error("Error fetching batches:", error); 
+                    console.error("Error fetching batches:", error);
                 });
-
-                return unsubscribe; 
+                return unsubscribe;
             } else {
-                console.log("No user document found"); 
+                console.log("No user document found");
             }
         } catch (error) {
-            console.error('Error fetching user document:', error); 
+            console.error('Error fetching user document:', error);
         } finally {
-            setLoading(false); 
+            setLoading(false);
             setRefreshing(false);
         }
     } else {
-        //console.log("No authenticated user"); 
+        // If user is not logged in, stop refreshing
+        //console.log("No authenticated user");
         setRefreshing(false);
     }
 };
@@ -95,13 +96,19 @@ const Home = () => {
   // function para icheck yung mga batches na may day 1 notification in-app, etc
   useEffect(() => {
     batches.forEach((item) => {
+        //gets the date
         const [month, day, year] = item.startDate.split('-').map(Number);
         const startDate = new Date(year, month - 1, day);
         const currentDate = new Date();
+
+        // count the elapsed days
         const dayDifference = Math.floor((currentDate - startDate) / (1000 * 60 * 60 * 24));
         const displayDay = dayDifference + 1;
 
+        // unique if for notifications
         const notificationId = `${item.id}-day-${displayDay}`;
+
+        // dupolicate checking, and creation of notification messages
         if (!existingNotifications.has(notificationId)) {
             if (displayDay === 1) {
                 createNotification(item, `The batch ${item.batchName} has started incubation.`, success);
@@ -112,6 +119,7 @@ const Home = () => {
             } else if (displayDay === 21) {
                 createNotification(item, `The batch ${item.batchName} is expected to finish incubating today.`, info);
             }
+            //marker para malaman na nag set na yung notification, para sa duplicates
             setExistingNotifications((prev) => new Set(prev).add(notificationId));
         }
     });
@@ -127,23 +135,26 @@ useEffect(() => {
 }, [shouldCreateNotification, notificationBatch]);
 
 const fetchTemperatureAndHumidity = () => {
+  //retrieve teperature and humidity from Firebase RTDB
   const tempRef = ref(rtdb, 'temperature');
   const humidityRef = ref(rtdb, 'humidity');
 
   const fetchData = () => {
+    //listens for realtime changes using snapshopt method from firebase
     onValue(tempRef, (snapshot) => {
       const tempValue = snapshot.val();
       //console.log('Temperature:', tempValue);
-      setTemperature(tempValue);
+      setTemperature(tempValue); //sets the latest temperature
     }, (error) => {
       console.error('Error fetching temperature:', error);
     });
 
     onValue(humidityRef, (snapshot) => {
+      //listens for realtime changes using snapshot method from firebase
       const humidityValue = snapshot.val();
       //console.log('Humidity:', humidityValue);
       const formattedHumidity = `${parseFloat(humidityValue).toFixed(1)}%`;
-      setHumidity(formattedHumidity);
+      setHumidity(formattedHumidity); //sets the latest temperature
     }, (error) => {
       console.error('Error fetching humidity:', error);
     });
@@ -427,20 +438,20 @@ useEffect(() => {
   const createNotification = async (batch, message, icon) => {
     const db = getFirestore();
     const user = auth.currentUser;
-  
+    // serves as blocker, stops the function when there is no user.
     if (!user) {
       console.error('User is not authenticated.');
       return;
     }
-    try {
+    try { //gets user doc from firebase
       const userDocRef = doc(db, 'users', user.uid);
       const userDoc = await getDoc(userDocRef);
-  
+      //blocker, stops when there is no doc from firebase
       if (!userDoc.exists()) {
         console.error('User data not found in Firestore.');
         return;
       }
-  
+      //handles user information and setting up data for notification
       const userData = userDoc.data();
       const userMobileNum = userData.mobilenum || "Unknown";
       const notificationData = {
@@ -456,26 +467,26 @@ useEffect(() => {
       };
   
       const batchNotifCollection = collection(db, 'batchNotif');
-  
+      //another duplication check
       const duplicateCheckQuery = query(
         batchNotifCollection,
         where('batchid', '==', notificationData.batchid),
         where('message', '==', notificationData.message),
       );
       const existingNotifications = await getDocs(duplicateCheckQuery);
-  
+      //if duplicates are found, do not create. return.
       if (!existingNotifications.empty) {
         console.log('Duplicate notification detected. No new notification created.');
         return;
       }
       const docRef = await addDoc(batchNotifCollection, notificationData);
       console.log(`Notification successfully created for batch: ${batch.batchName}`);
-
+      //handles email content
       const emailSubject = `New Notification for Batch ${batch.batchName}`;
       const emailBody = message;
   
       const emailSent = await sendEmailViaSendGrid(user.email, emailSubject, emailBody);
-  
+      //used as a "checker", to save on firebase that the email has been sent. 
       if (emailSent) {
         console.log('Email sent successfully.');
         await updateDoc(doc(db, 'batchNotif', docRef.id), { sms: 'yes' });
